@@ -1,0 +1,8 @@
+ollama
+speechrecognition
+pyaudio
+psutil
+requests
+numpy
+sentence-transformers
+duckduckgo-search
