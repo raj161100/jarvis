@@ -13,7 +13,7 @@ echo ""
 echo "[1/7] Installing system packages..."
 sudo apt update -qq
 sudo apt install -y \
-    python3-pip python3-venv \
+    python3-pip python3-venv python3-tk \
     portaudio19-dev \
     alsa-utils espeak-ng \
     git cmake build-essential \
