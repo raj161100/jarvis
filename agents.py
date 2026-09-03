@@ -106,7 +106,8 @@ class OrchestratorAgent:
                 options=OPTS_MAIN,
                 think=False
             )
-            data     = json.loads(r.message.content)
+            content  = re.sub(r"<think>.*?</think>", "", r.message.content, flags=re.DOTALL).strip()
+            data     = json.loads(content)
             response = data.get("response", "").strip()
             remember = data.get("remember", "").strip()
             return response, remember

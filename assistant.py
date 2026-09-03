@@ -172,7 +172,8 @@ class JarvisApp:
             ollama_client.chat(
                 model=MODEL,
                 messages=[{"role": "user", "content": "ready"}],
-                options={"num_predict": 1}
+                think=False,
+                options={"num_predict": 1, "num_thread": 4}
             )
             self.ui_queue.put(("status", "● STANDBY", "#00d4ff"))
         except Exception:
