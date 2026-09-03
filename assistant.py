@@ -1,4 +1,3 @@
-import os
 import re
 import subprocess
 import threading
@@ -26,8 +25,12 @@ class JarvisApp:
     def __init__(self, root):
         self.root     = root
         self.root.title("J.A.R.V.I.S")
-        self.root.geometry("800x480")
         self.root.configure(bg="#0a0a14")
+        # Delay geometry until after window is mapped so we can read real screen height
+        self.root.update_idletasks()
+        screen_h = self.root.winfo_screenheight()
+        win_h = min(480, screen_h - 50)   # leave 50px for taskbar
+        self.root.geometry(f"800x{win_h}")
 
         self.ui_queue = queue.Queue()
         self.tts_lock = threading.Lock()
@@ -66,28 +69,9 @@ class JarvisApp:
         self.time_lbl.pack(side=tk.RIGHT)
         self.tick_clock()
 
-        # Chat display
-        self.chat = scrolledtext.ScrolledText(
-            self.root, wrap=tk.WORD,
-            bg="#0d1117", fg="#c9d1d9",
-            insertbackground="white",
-            font=("Courier", 12), bd=0,
-            highlightthickness=1, highlightbackground="#21262d"
-        )
-        self.chat.pack(padx=15, pady=8, fill=tk.BOTH, expand=True)
-        self.chat.config(state=tk.DISABLED)
-
-        # Color tags per message source
-        self.chat.tag_configure("jarvis", foreground="#00d4ff", font=("Courier", 12, "bold"))
-        self.chat.tag_configure("cache",  foreground="#89b4fa", font=("Courier", 12, "bold"))
-        self.chat.tag_configure("tool",   foreground="#a6e3a1", font=("Courier", 12, "bold"))
-        self.chat.tag_configure("block",  foreground="#f38ba8", font=("Courier", 12, "bold"))
-        self.chat.tag_configure("user",   foreground="#7ee787", font=("Courier", 12, "bold"))
-        self.chat.tag_configure("system", foreground="#8b949e", font=("Courier", 11, "italic"))
-
-        # Input row
+        # Input row — packed BEFORE chat so it reserves space first
         row = tk.Frame(self.root, bg="#0a0a14")
-        row.pack(fill=tk.X, padx=15, pady=(0, 12), side=tk.BOTTOM)
+        row.pack(fill=tk.X, padx=15, pady=(0, 8), side=tk.BOTTOM)
 
         self.entry = tk.Entry(
             row, bg="#161b22", fg="#c9d1d9",
@@ -104,6 +88,25 @@ class JarvisApp:
             font=("Courier", 11, "bold"), padx=10
         )
         self.status_lbl.pack(side=tk.RIGHT, ipady=6)
+
+        # Chat display — packed after input row so expand=True fills remaining space
+        self.chat = scrolledtext.ScrolledText(
+            self.root, wrap=tk.WORD,
+            bg="#0d1117", fg="#c9d1d9",
+            insertbackground="white",
+            font=("Courier", 12), bd=0,
+            highlightthickness=1, highlightbackground="#21262d"
+        )
+        self.chat.pack(padx=15, pady=(0, 4), fill=tk.BOTH, expand=True)
+        self.chat.config(state=tk.DISABLED)
+
+        # Color tags per message source
+        self.chat.tag_configure("jarvis", foreground="#00d4ff", font=("Courier", 12, "bold"))
+        self.chat.tag_configure("cache",  foreground="#89b4fa", font=("Courier", 12, "bold"))
+        self.chat.tag_configure("tool",   foreground="#a6e3a1", font=("Courier", 12, "bold"))
+        self.chat.tag_configure("block",  foreground="#f38ba8", font=("Courier", 12, "bold"))
+        self.chat.tag_configure("user",   foreground="#7ee787", font=("Courier", 12, "bold"))
+        self.chat.tag_configure("system", foreground="#8b949e", font=("Courier", 11, "italic"))
 
     def tick_clock(self):
         self.time_lbl.config(text=datetime.datetime.now().strftime("%H:%M:%S  %d %b %Y"))
@@ -189,7 +192,13 @@ class JarvisApp:
         recognizer = sr.Recognizer()
         recognizer.dynamic_energy_threshold = True
 
-        with sr.Microphone() as source:
+        try:
+            mic = sr.Microphone()
+        except Exception:
+            self.ui_queue.put(("msg", "System", "No microphone detected. Voice input disabled. Use the text box.", "system"))
+            return
+
+        with mic as source:
             recognizer.adjust_for_ambient_noise(source, duration=1)
             while self.running:
                 try:

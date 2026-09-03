@@ -70,7 +70,7 @@ Return this exact structure:
                 format="json",
                 options=OPTS_FAST
             )
-            return json.loads(r["message"]["content"])
+            return json.loads(r.message.content)
         except Exception:
             return {
                 "category": "question", "tool_name": "none",
@@ -104,7 +104,7 @@ class OrchestratorAgent:
                 format="json",
                 options=OPTS_MAIN
             )
-            data     = json.loads(r["message"]["content"])
+            data     = json.loads(r.message.content)
             response = data.get("response", "").strip()
             remember = data.get("remember", "").strip()
             return response, remember
@@ -142,7 +142,7 @@ Return ONLY valid JSON:
                 format="json",
                 options=OPTS_VERIFY
             )
-            data = json.loads(r["message"]["content"])
+            data = json.loads(r.message.content)
             return data.get("revised_response", response).strip() or response
         except Exception:
             return response
