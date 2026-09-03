@@ -68,7 +68,8 @@ Return this exact structure:
                     {"role": "user",   "content": user_input}
                 ],
                 format="json",
-                options=OPTS_FAST
+                options=OPTS_FAST,
+                think=False
             )
             return json.loads(r.message.content)
         except Exception:
@@ -102,7 +103,8 @@ class OrchestratorAgent:
                     {"role": "user", "content": f"{memory_block}{user_input}"}
                 ],
                 format="json",
-                options=OPTS_MAIN
+                options=OPTS_MAIN,
+                think=False
             )
             data     = json.loads(r.message.content)
             response = data.get("response", "").strip()
@@ -140,7 +142,8 @@ Return ONLY valid JSON:
                      "content": f"User said: {user_input}\n\nResponse to check: {response}"}
                 ],
                 format="json",
-                options=OPTS_VERIFY
+                options=OPTS_VERIFY,
+                think=False
             )
             data = json.loads(r.message.content)
             return data.get("revised_response", response).strip() or response

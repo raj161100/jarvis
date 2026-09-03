@@ -30,21 +30,21 @@ NO_CACHE = {"time_query", "date_query", "system_status"}
 # Fast agents: classify and security — short output, small context
 OPTS_FAST = {
     "temperature": 0.0,
-    "num_predict": 200,
+    "num_predict": 400,   # enough for JSON output without thinking overhead
     "num_ctx":    1024,
     "num_thread":    4,
 }
 # Main agent: full reasoning
 OPTS_MAIN = {
     "temperature": 0.7,
-    "num_predict": 180,  # 2-3 spoken sentences max
+    "num_predict": 300,   # 2-3 spoken sentences
     "num_ctx":    4096,
     "num_thread":    4,
 }
 # Verification: moderate context, low temp
 OPTS_VERIFY = {
     "temperature": 0.1,
-    "num_predict": 300,
+    "num_predict": 400,
     "num_ctx":    2048,
     "num_thread":    4,
 }
