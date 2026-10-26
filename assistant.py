@@ -1,6 +1,3 @@
-import os
-import re
-import subprocess
 import threading
 import tkinter as tk
 from tkinter import scrolledtext
@@ -24,43 +21,15 @@ def _silence_alsa_errors():
 
 _silence_alsa_errors()
 
-import speech_recognition as sr
 from ollama import Client
 
-from config import (
-    WHISPER_PATH, WHISPER_MODEL, WHISPER_CMD_MODEL, TEMP_AUDIO,
-    PIPER_PATH, PIPER_MODEL, DB_PATH,
-    WAKE_WORDS, AGENT_NAME, OLLAMA_HOST, MODEL, OPTS_CHAT
-)
+from config import DB_PATH, AGENT_NAME, OLLAMA_HOST, MODEL, OPTS_CHAT
 from database import JarvisDB
 from agents import AgentPipeline, FULL_SYSTEM_PROMPT
 from speech import Speaker
+from voice_input import VoiceInput
 
 ollama_client = Client(host=OLLAMA_HOST)
-
-# "hey jarvis, what time is it" -> match ends after "jarvis, "
-WAKE_RE = re.compile(
-    r"\b(?:(?:hey|hi|ok|okay)[\s,]+)?(?:" + "|".join(map(re.escape, WAKE_WORDS)) + r")\b[\s,.!?]*",
-    re.I,
-)
-# Whisper emits these for silence/noise; never treat them as speech
-NOISE_TAGS     = re.compile(r"\[[^\]]*\]|\([^)]*\)|\*[^*]*\*")
-HALLUCINATIONS = {"you", "thank you", "thanks", "thank you for watching", "thanks for watching", "bye", "okay"}
-
-
-def clean_transcript(text: str) -> str:
-    text = re.sub(r"\s+", " ", NOISE_TAGS.sub("", text)).strip()
-    if text.lower().strip(" .!?,") in HALLUCINATIONS:
-        return ""
-    return text
-
-
-def after_wake_word(heard: str):
-    """None if no wake word; otherwise whatever was said after it ('' if nothing)."""
-    m = WAKE_RE.search(heard)
-    if not m:
-        return None
-    return heard[m.end():].strip(" ,.!?")
 
 
 class JarvisApp:
@@ -77,29 +46,25 @@ class JarvisApp:
         self.ui_queue = queue.Queue()
         # One query at a time — concurrent requests just queue inside Ollama anyway
         self.pipeline_lock = threading.Lock()
-        self.ptt_event     = threading.Event()   # TALK button pressed
-        self.running       = True
-        self.voice_ready   = False
         self.muted         = False               # MUTE button: replies shown on screen only
-        self.cmd_model     = WHISPER_MODEL
         self._last_status  = None
 
-        # Init DB, pipeline and speech output
+        # Init DB, pipeline, speech output and voice input (each reports problems in the chat window)
         self.db       = JarvisDB(DB_PATH)
         self.pipeline = AgentPipeline(self.db)
-        self.speaker  = Speaker()
+        self.speaker  = Speaker(notice=self.system_msg)
+        self.voice    = VoiceInput(self.speaker, on_command=self.handle_voice_command,
+                                   on_status=self.set_status, notice=self.system_msg,
+                                   is_busy=self.pipeline_lock.locked)
 
         self.build_ui()
         self.check_queue_loop()
 
-        voice_ok = self._startup_checks()
-
         # Pre-warm model in background so first query has no cold-start delay
         threading.Thread(target=self._warm_model, daemon=True).start()
 
-        # Start wake word listener
-        if voice_ok:
-            threading.Thread(target=self.wake_word_listener, daemon=True).start()
+        # Wake word listener (loads the speech recogniser first)
+        threading.Thread(target=self.voice.run, daemon=True).start()
 
     # ── UI BUILD ──────────────────────────────────────────────────────────────
     def build_ui(self):
@@ -222,30 +187,6 @@ class JarvisApp:
         print(f"[Jarvis] {text}")
         self.ui_queue.put(("msg", "System", text, "system"))
 
-    # ── STARTUP CHECKS ────────────────────────────────────────────────────────
-    def _startup_checks(self) -> bool:
-        """Report missing pieces in the GUI instead of failing silently. Returns True if voice can work."""
-        if not (os.path.exists(PIPER_PATH) and os.path.exists(PIPER_MODEL)):
-            self.system_msg("Piper voice not found in ~/piper — using the espeak-ng fallback voice.")
-
-        if not os.path.exists(WHISPER_PATH):
-            self.system_msg(
-                "Voice input disabled: whisper-cli not found. Build it with: "
-                "cd ~/whisper.cpp && cmake -B build && cmake --build build -j4 --config Release"
-            )
-            return False
-        if not os.path.exists(WHISPER_MODEL):
-            self.system_msg(
-                "Voice input disabled: whisper model missing. Run: "
-                "bash ~/whisper.cpp/models/download-ggml-model.sh tiny.en"
-            )
-            return False
-
-        self.cmd_model = WHISPER_CMD_MODEL if os.path.exists(WHISPER_CMD_MODEL) else WHISPER_MODEL
-        print(f"[Jarvis] Wake word model: {os.path.basename(WHISPER_MODEL)}, "
-              f"command model: {os.path.basename(self.cmd_model)}")
-        return True
-
     # ── MODEL WARM-UP ─────────────────────────────────────────────────────────
     def _warm_model(self):
         """Load the model into RAM at startup to eliminate cold-start lag."""
@@ -284,11 +225,15 @@ class JarvisApp:
 
     def on_talk_pressed(self):
         self.speaker.stop()
-        if not self.voice_ready:
-            self.system_msg("Voice input isn't available — see the messages above. Use the text box.")
+        if not self.voice.ready:
+            if self.voice.failed:
+                self.system_msg("Voice input isn't available — see the messages above. Use the text box.")
+            else:
+                self.system_msg("Voice input is still starting up — try again in a moment.")
             return
-        self.set_status("● LISTENING", "#f85149")
-        self.ptt_event.set()
+        if not self.pipeline_lock.locked():   # otherwise it listens once the current answer is done
+            self.set_status("● LISTENING", "#f85149")
+        self.voice.ptt.set()
 
     def on_mute_pressed(self):
         self.muted = not self.muted
@@ -299,112 +244,10 @@ class JarvisApp:
             self.mute_btn.config(text="MUTE", bg="#30363d", activebackground="#484f58")
 
     # ── VOICE INPUT ───────────────────────────────────────────────────────────
-    def wake_word_listener(self):
-        recognizer = sr.Recognizer()
-        recognizer.dynamic_energy_threshold = True
-        recognizer.pause_threshold = 0.7   # seconds of silence that end a phrase
-
-        try:
-            mic = sr.Microphone()
-            with mic as source:
-                recognizer.adjust_for_ambient_noise(source, duration=1)
-                self.voice_ready = True
-                print(f"[Jarvis] Listening for wake word (energy threshold {recognizer.energy_threshold:.0f}).")
-                while self.running:
-                    try:
-                        self._listen_once(recognizer, source)
-                    except Exception as e:
-                        print(f"[Jarvis] Voice loop error: {type(e).__name__}: {e}")
-                        time.sleep(1)
-        except Exception as e:
-            self.system_msg(f"Voice input disabled: could not open the microphone ({e}). "
-                            f"Check 'arecord -l'. You can still type.")
-
-    def _listen_once(self, recognizer, source):
-        if self.ptt_event.is_set():
-            self.ptt_event.clear()
-            self.capture_command(recognizer, source)
-            return
-
-        # Half-duplex: don't listen while Jarvis is talking, or it hears itself
-        if self.speaker.is_speaking():
-            self.set_status("● SPEAKING", "#00d4ff")
-            time.sleep(0.1)
-            return
-
-        if not self.pipeline_lock.locked():
-            self.set_status("● STANDBY", "#00d4ff")
-
-        t0 = time.time()
-        try:
-            audio = recognizer.listen(source, timeout=2, phrase_time_limit=6)
-        except sr.WaitTimeoutError:
-            return
-        if self.speaker.active_since(t0) or self.ptt_event.is_set():
-            return   # captured our own voice, or the TALK button took over
-
-        heard = self.transcribe(audio, WHISPER_MODEL)
-        command = after_wake_word(heard)
-        if command is None:
-            return
-        print(f"[Jarvis] Wake word heard: '{heard}'")
-
-        if command:
-            # Said in one breath ("hey jarvis what time is it") — re-transcribe with the accurate model
-            if self.cmd_model != WHISPER_MODEL:
-                self.set_status("● TRANSCRIBING", "#d29922")
-                precise  = self.transcribe(audio, self.cmd_model)
-                stripped = after_wake_word(precise)
-                if stripped:                       # accurate model also heard the wake word
-                    command = stripped
-                elif stripped is None and precise: # it transcribed the wake word differently
-                    command = precise
-            self.handle_voice_command(command)
-        else:
-            self.capture_command(recognizer, source)
-
-    def capture_command(self, recognizer, source):
-        self.set_status("● LISTENING", "#f85149")
-        self.speaker.beep()
-        try:
-            audio = recognizer.listen(source, timeout=5, phrase_time_limit=12)
-        except sr.WaitTimeoutError:
-            self.system_msg("I didn't hear a command.")
-            return
-
-        self.set_status("● TRANSCRIBING", "#d29922")
-        text = self.transcribe(audio, self.cmd_model)
-        stripped = after_wake_word(text)   # drop a repeated "hey jarvis"
-        if stripped is not None:
-            text = stripped
-        if text:
-            self.handle_voice_command(text)
-        else:
-            self.system_msg("Sorry, I didn't catch that.")
-
     def handle_voice_command(self, text):
+        """Called from the voice thread with a transcribed command."""
         self.ui_queue.put(("msg", "You (Voice)", text, "user"))
         self.run_pipeline(text, speak=True)
-
-    def transcribe(self, audio, model_path) -> str:
-        """Runs whisper.cpp on the captured audio. Returns cleaned text ('' on failure/noise)."""
-        with open(TEMP_AUDIO, "wb") as f:
-            f.write(audio.get_wav_data(convert_rate=16000, convert_width=2))   # whisper's native format
-        t0 = time.time()
-        try:
-            result = subprocess.run(
-                [WHISPER_PATH, "-m", model_path, "-f", TEMP_AUDIO, "-nt", "-np", "-l", "en", "-t", "4"],
-                capture_output=True, text=True, timeout=60
-            )
-        except Exception as e:
-            print(f"[Jarvis] Whisper failed to run: {e}")
-            return ""
-        if result.returncode != 0:
-            print(f"[Jarvis] Whisper error ({result.returncode}): {result.stderr.strip()[-300:]}")
-            return ""
-        text = clean_transcript(result.stdout)
-        print(f"[Jarvis] STT {os.path.basename(model_path)} {time.time() - t0:.1f}s: '{text}'")
-        return text
 
     # ── PIPELINE BRIDGE ───────────────────────────────────────────────────────
     def run_pipeline(self, user_input: str, speak: bool):
@@ -419,11 +262,15 @@ class JarvisApp:
 
     def _run_pipeline(self, user_input: str, speak: bool):
         streamed = []
+        epoch = self.speaker.epoch    # changes when Escape/TALK/typing stops speech
+
+        def speaking():
+            return speak and not self.muted and self.speaker.epoch == epoch
 
         def on_sentence(sentence):
             # LLM replies arrive sentence by sentence: show (and speak) each immediately.
-            # self.muted is checked per sentence so MUTE takes effect mid-reply.
-            voice = speak and not self.muted
+            # Checked per sentence so MUTE / Escape silence the rest of the reply.
+            voice = speaking()
             if not streamed:
                 self.ui_queue.put(("start", AGENT_NAME, "jarvis"))
                 if voice:
@@ -459,7 +306,7 @@ class JarvisApp:
             response,
             tag_map.get(source, "jarvis")
         ))
-        if speak and not self.muted:
+        if speaking():
             self.speaker.say_text(response)
 
 

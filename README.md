@@ -9,10 +9,11 @@ A fully offline AI assistant for Raspberry Pi 5 with a British accent, streaming
 | Feature | Detail |
 |---|---|
 | **LLM** | Ollama (qwen3.5:4b, thinking disabled) — one streaming call per turn |
-| **Speech input** | Whisper.cpp — `tiny.en` scans for the wake word, `base.en` transcribes commands |
-| **Wake word** | "Hey Jarvis …" in one breath, or "Jarvis" → beep → command |
+| **Wake word** | openWakeWord "hey jarvis" model — always listening, very light on the CPU |
+| **Speech input** | Moonshine (medium) — accurate with accents, ~0.5 s per command; Whisper.cpp fallback |
+| **Talking to it** | "Hey Jarvis, what time is it?" in one breath, or "Hey Jarvis" → beep → command |
 | **Push-to-talk** | **TALK** button on the touchscreen skips the wake word |
-| **Voice output** | Piper TTS — neural British voice (Alan, en_GB); espeak-ng fallback |
+| **Voice output** | Kokoro — natural British male voice (George); Piper and espeak-ng fallbacks |
 | **Reply mode** | Spoken questions get spoken replies; typed questions are answered on screen only; **MUTE** button silences voice |
 | **Sentence-streaming TTS** | Each sentence is spoken as soon as the LLM finishes it |
 | **Half-duplex mic** | Mic input is ignored while Jarvis is speaking, so it never hears itself |
@@ -46,8 +47,10 @@ A fully offline AI assistant for Raspberry Pi 5 with a British accent, streaming
 
 ```
 jarvis/
-├── assistant.py      # Main app — GUI, wake word, push-to-talk, STT, pipeline bridge
-├── speech.py         # Speaker — Piper TTS synth + playback queue, beep, stop
+├── assistant.py      # Main app — GUI, push-to-talk, pipeline bridge
+├── voice_input.py    # Microphone, wake word, command recording
+├── stt.py            # Speech-to-text — Moonshine, Whisper.cpp fallback
+├── speech.py         # Speaker — Kokoro / Piper voices, playback queue, beep, stop
 ├── agents.py         # Router, memory commands, streaming LLM orchestrator, pipeline
 ├── tools.py          # Tool handler — weather, news, search, Wikipedia, time, system
 ├── database.py       # SQLite wrapper — memory, history, cache, security log
@@ -79,10 +82,11 @@ chmod +x setup.sh
 - Python virtual environment + pip packages
 - Ollama install + Pi 5 systemd config (flash attention, keep-alive)
 - Model pull: `qwen3.5:4b`
-- Piper TTS binary + British voice (Alan, medium quality)
-- Whisper.cpp build (`whisper-cli`) + `tiny.en` and `base.en` models
+- Voices: Kokoro (into `~/kokoro`) and three Piper voices (into `~/piper`)
+- Moonshine speech recogniser model (cached in `~/.cache/moonshine_voice`)
+- Whisper.cpp build (`whisper-cli`) + `tiny.en` and `base.en` models — only used as a fallback
 
-It is safe to re-run — finished steps are skipped.
+It is safe to re-run — finished steps are skipped. After pulling a new version, re-run it to get new voices and models (Jarvis keeps working with the old ones until you do).
 
 ### 2. Optional — set your NewsAPI key and home city
 
@@ -106,7 +110,7 @@ python assistant.py
 Wait until the status changes from **WARMING UP** to **STANDBY** / **LISTENING** (the first load of the model takes about a minute), then:
 
 - Say **"Hey Jarvis, what time is it?"** in one breath, or
-- Say **"Jarvis"**, wait for the beep, then speak your command, or
+- Say **"Hey Jarvis"**, wait for the beep, then speak your command, or
 - Tap **TALK**, wait for the beep, then speak, or
 - Type in the text box and press Enter — typed questions are answered on screen only.
 
@@ -171,7 +175,7 @@ Or edit `MODEL` in `config.py`.
 | `qwen3.5:2b` | Roughly twice as fast; a little less accurate |
 | `gemma4:e2b` | Fast; weaker at following instructions |
 
-Do not load two large models at once — the Pi 5 has 8 GB total and the OS + Piper take ~1.5 GB.
+Do not load two large models at once — the Pi 5 has 8 GB total, and the OS, speech recogniser and voice take ~2.5 GB.
 
 ### Tune model options
 
@@ -228,15 +232,24 @@ Only tools listed in `CACHEABLE_TOOLS` (`config.py`) use the semantic cache. Lea
 
 ---
 
-## How to Add / Change Wake Words
+## Wake Word and Speech Recognition
 
-In `config.py`:
+The wake phrase is **"Hey Jarvis"** (a fixed openWakeWord model). Say the command in the same breath, or pause and wait for the beep. Extra names like `"jarvas"` in `config.py` are only used to strip mishearings of "Jarvis" from the start of a command:
 
 ```python
 WAKE_WORDS = ["jarvis", "jarvas", "jervis", "javis", "aami"]
 ```
 
-Whisper `tiny.en` often mishears names, so include common misspellings. An optional "hey / hi / ok" before the wake word is handled automatically.
+| Problem | Fix |
+|---|---|
+| Jarvis wakes up by itself | Raise the threshold: `JARVIS_WAKE_THRESHOLD=0.6` |
+| It misses "Hey Jarvis" | Lower it: `JARVIS_WAKE_THRESHOLD=0.3`, and speak towards the mic |
+| Commands get cut off | Raise `COMMAND_PAUSE_S` in `config.py` (silence that ends a command) |
+| Running low on memory | Smaller recogniser: `JARVIS_STT_MODEL=small` (~0.8 GB) or `tiny` (~0.4 GB) |
+
+The terminal shows when the wake word fires and what was heard as `[Voice] …` lines.
+
+If the wake word model or Moonshine isn't installed (e.g. you pulled without re-running `setup.sh`), Jarvis falls back to Whisper.cpp and says so in the chat window.
 
 ---
 
@@ -259,7 +272,7 @@ User input (voice or text)
     └─ Persist to DB (errors are never saved or cached)
 ```
 
-Per-stage timings are printed in the terminal as `[Pipeline] …` lines, and speech-to-text timings as `[Jarvis] STT …`.
+Per-stage timings are printed in the terminal as `[Pipeline] …` lines, and speech-to-text timings as `[Voice] STT …`.
 
 ---
 
@@ -305,7 +318,7 @@ To clear it: `sqlite3 ~/jarvis.db "DELETE FROM semantic_cache;"`
 
 ## Voice Output and Speakers
 
-Jarvis speaks with the Piper neural voice and plays it through `aplay`, so it uses whatever the Pi's **default audio output** is — HDMI, a USB speaker, or a Bluetooth speaker.
+Jarvis speaks with the Kokoro neural voice and plays it through `aplay`, so it uses whatever the Pi's **default audio output** is — HDMI, a USB speaker, or a Bluetooth speaker.
 
 **USB speaker:** plug it in, then pick it as the output from the volume icon on the Pi desktop.
 
@@ -321,23 +334,30 @@ speaker-test -t wav -c 2     # test sound (Ctrl+C to stop)
 
 ### Change the voice
 
-| Voice | File | Character |
-|---|---|---|
-| `en_GB-alan-medium` *(default)* | `en_GB-alan-medium.onnx` | Male, clear, neutral British |
-| `en_GB-alan-low` | `en_GB-alan-low.onnx` | Same speaker, faster/smaller |
-| `en_GB-jenny_dioco-medium` | `en_GB-jenny_dioco-medium.onnx` | Female British |
-| `en_GB-cori-high` | `en_GB-cori-high.onnx` | Female, highest quality |
-| `en_US-ryan-high` | `en_US-ryan-high.onnx` | American male, highest quality |
+No code change needed — set environment variables (see [Environment Variables](#environment-variables) to make them permanent):
 
-1. Download the `.onnx` and `.onnx.json` files from [HuggingFace rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices) into `~/piper/`.
-2. Edit `PIPER_MODEL` in `config.py`.
+```bash
+JARVIS_VOICE=bf_emma python assistant.py                        # another Kokoro voice
+JARVIS_TTS=piper python assistant.py                            # faster Piper voice (Alan)
+JARVIS_VOICE=en_GB-cori-high python assistant.py                # a Piper voice name selects Piper by itself
+JARVIS_SPEED=1.1 python assistant.py                            # 10% faster speech
+```
+
+| Engine | Voices | Notes |
+|---|---|---|
+| **Kokoro** *(default)* | `bm_george` *(default)*, `bm_lewis`, `bm_daniel`, `bm_fable` (British male); `bf_emma`, `bf_isabella`, `bf_alice`, `bf_lily` (British female) | Most natural. About 1–3 s before each reply starts on the Pi |
+| **Piper** | `en_GB-alan-medium`, `en_GB-cori-high`, `en_US-ryan-high` (installed by `setup.sh`) | Starts speaking sooner; sounds more synthetic |
+
+More Piper voices: `python -m piper.download_voices <name> --data-dir ~/piper` (names on [HuggingFace rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices)).
+
+If the chosen voice can't load, Jarvis falls back to the next one (Kokoro → Piper → espeak-ng) and says so in the chat window.
 
 ---
 
 ## Troubleshooting
 
 ### Startup messages
-`assistant.py` checks its dependencies at startup and prints what is missing in the chat window (Piper, `whisper-cli`, Whisper models, Ollama model).
+If the wake word model, Moonshine, a voice or the Ollama model is missing, Jarvis says so in the chat window and uses a fallback. Re-run `./setup.sh` to install what's missing.
 
 ### Ollama not responding
 ```bash
@@ -348,10 +368,10 @@ ollama ps     # check it is loaded
 ```
 
 ### Voice is never recognised
-- Watch the terminal for `[Jarvis] STT ggml-tiny.en.bin 0.8s: '…'` lines — they show exactly what Whisper heard.
-- No STT lines at all → check the mic: `arecord -l` and
-  `python -c "import speech_recognition as sr; print(sr.Microphone.list_microphone_names())"`
-- `whisper-cli not found` → build it: `cd ~/whisper.cpp && cmake -B build && cmake --build build -j4 --config Release`
+- Watch the terminal: `[Voice] Wake word detected` shows the wake word fired, and `[Voice] STT Moonshine medium 0.4s: '…'` shows exactly what was heard.
+- No `[Voice] Listening` line at startup → check the mic: `arecord -l`, and test it with `arecord -d 3 -f S16_LE -r 16000 /tmp/t.wav && aplay /tmp/t.wav`.
+- Wakes but misses the command → speak right after the beep, or raise `COMMAND_PAUSE_S`.
+- See [Wake Word and Speech Recognition](#wake-word-and-speech-recognition) for the threshold settings.
 
 ### No audio output
 ```bash
@@ -383,6 +403,12 @@ See [Voice Output and Speakers](#voice-output-and-speakers).
 | `JARVIS_LOCATION` | `New York` | Default city for weather |
 | `JARVIS_UNITS` | `F` | Weather temperature units: `F` or `C` |
 | `JARVIS_PROFILE` | `~/jarvis_profile.md` | Personal profile file |
+| `JARVIS_TTS` | `kokoro` | Voice engine: `kokoro` or `piper` |
+| `JARVIS_VOICE` | `bm_george` / `en_GB-alan-medium` | Voice name (a Piper name like `en_GB-cori-high` switches to Piper) |
+| `JARVIS_SPEED` | `1.0` | Speaking speed (`1.1` = 10% faster) |
+| `JARVIS_TTS_THREADS` | `2` | CPU threads for the voice; it shares cores with the LLM while a reply streams, so try `1` if replies generate slowly |
+| `JARVIS_STT_MODEL` | `medium` | Speech recogniser size: `medium`, `small` or `tiny` |
+| `JARVIS_WAKE_THRESHOLD` | `0.4` | "Hey Jarvis" sensitivity, 0–1 (higher = fewer false wakes) |
 | `NEWS_API_KEY` | *(empty)* | NewsAPI.org key for headlines (falls back to BBC RSS) |
 | `OLLAMA_HOST` | `http://localhost:11434` | Ollama server address |
 

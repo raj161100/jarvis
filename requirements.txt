@@ -1,8 +1,12 @@
 ollama>=0.5.0
-speechrecognition
 pyaudio
 psutil
 requests
 numpy
 sentence-transformers
 ddgs
+# Voice — versions pinned to the APIs Jarvis was written against
+pyopen-wakeword==1.1.0
+moonshine-voice==0.1.5
+piper-tts==1.8.0
+kokoro-onnx==0.6.1
