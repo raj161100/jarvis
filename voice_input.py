@@ -136,9 +136,10 @@ class SpeechGate:
         return speech
 
 
-def record_utterance(read, gate, wait_s, pause_s, max_s, preroll=(), started=False) -> bytes:
+def record_utterance(read, gate, wait_s, pause_s, max_s, preroll=(), started=False, timing=None) -> bytes:
     """Record one utterance. Returns PCM bytes, or b'' if nobody started speaking within wait_s.
-    preroll/started: audio already captured mid-sentence (the words right after the wake word)."""
+    preroll/started: audio already captured mid-sentence (the words right after the wake word).
+    timing: optional dict; gets "speech_end", the time.time() when the speaker stopped talking."""
     chunks  = list(preroll)
     before  = deque(maxlen=4)      # the 2 chunks that start speech + ~0.16 s before them (more makes Moonshine add "Yeah")
     voiced  = 0
@@ -161,6 +162,8 @@ def record_utterance(read, gate, wait_s, pause_s, max_s, preroll=(), started=Fal
         silent = 0 if speech else silent + 1
         if silent * CHUNK_S >= pause_s or len(chunks) * CHUNK_S >= max_s:
             break
+    if timing is not None:                 # mic reads block in real time, so now = end of the audio
+        timing["speech_end"] = time.time() - silent * CHUNK_S
     trailing = max(0, silent - 3)          # keep ~0.25 s of the closing silence
     if trailing:
         chunks = chunks[:-trailing]
@@ -172,6 +175,7 @@ class PhraseCollector:
 
     def __init__(self, gate, pause_s=SCAN_PAUSE_S, max_s=SCAN_MAX_S):
         self.gate, self.pause_s, self.max_s = gate, pause_s, max_s
+        self.speech_end = 0.0      # time.time() when the last returned phrase's speaker stopped talking
         self.reset()
 
     def reset(self):
@@ -193,6 +197,7 @@ class PhraseCollector:
         self.silent = 0 if speech else self.silent + 1
         if self.silent * CHUNK_S >= self.pause_s or len(self.chunks) * CHUNK_S >= self.max_s:
             phrase = b"".join(self.chunks)
+            self.speech_end = time.time() - self.silent * CHUNK_S
             self.reset()
             return phrase
         return None
@@ -260,6 +265,7 @@ class VoiceInput:
         self.scan_stt   = None            # wake word fallback transcriber
         self.wake       = None
         self.gate       = SpeechGate()
+        self.spoke_until = 0.0            # time.time() the last command's speaker stopped talking
 
     # ── setup ────────────────────────────────────────────────────────────────
     def _load(self) -> bool:
@@ -365,6 +371,7 @@ class VoiceInput:
                 else:
                     phrase = phrases.feed(chunk)
                     if phrase:
+                        self.spoke_until = phrases.speech_end
                         self._on_phrase(mic, phrase)
                         resume = True
                 errors = 0
@@ -396,8 +403,10 @@ class VoiceInput:
             self._command(mic, beep=True)
             return
 
+        timing = {}
         audio = record_utterance(mic.read, self.gate, COMMAND_WAIT_S, COMMAND_PAUSE_S, COMMAND_MAX_S,
-                                 preroll=history + follow, started=True)
+                                 preroll=history + follow, started=True, timing=timing)
+        self.spoke_until = timing["speech_end"]
         self.ptt.clear()                          # TALK pressed while we were already listening
         text = self._transcribe(audio)
         command = self._command_text(text)
@@ -434,7 +443,10 @@ class VoiceInput:
         if beep:
             self.speaker.beep()
             mic.flush()                           # don't record the beep
-        audio = record_utterance(mic.read, self.gate, COMMAND_WAIT_S, COMMAND_PAUSE_S, COMMAND_MAX_S)
+        timing = {}
+        audio = record_utterance(mic.read, self.gate, COMMAND_WAIT_S, COMMAND_PAUSE_S, COMMAND_MAX_S,
+                                 timing=timing)
+        self.spoke_until = timing.get("speech_end", time.time())
         self.ptt.clear()                          # TALK pressed while we were already listening
         if not audio:
             self.notice("I didn't hear a command.")

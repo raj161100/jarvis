@@ -381,6 +381,11 @@ speaker-test -t wav -c 2
 See [Voice Output and Speakers](#voice-output-and-speakers).
 
 ### Replies are slow
+- Every reply shows how long it took in a grey line under it (also printed as `[Timing]` in the terminal):
+  - Typed: `4.3s until the reply was on screen · first words 2.1s`, measured from pressing Enter.
+  - Spoken: `9.8s from when you stopped talking until Jarvis finished speaking · understood 1.7s · first words 3.4s · started speaking 4.6s`.
+    "Understood" includes the ~1.1 s pause Jarvis waits for to know you've finished, plus the transcription.
+  - If you interrupt a spoken reply the line ends `until the reply was stopped`; with MUTE on it ends `until the reply was on screen`.
 - Check the `[Pipeline]` timings in the terminal.
 - `ollama ps` should show the model loaded "Forever".
 - Swap must be off: `free -h`.

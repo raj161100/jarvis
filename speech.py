@@ -160,6 +160,7 @@ class Speaker:
         self.epoch   = 0          # bumped by stop(); stale items are dropped
         self.pending = 0          # sentences queued but not finished playing
         self.last_end    = 0.0
+        self.audio_start = None   # time.time() the current reply started playing (for timings)
         self.player_proc = None
         self.beep_path   = os.path.join(TEMP_DIR, "jarvis_beep.wav")
         self._write_beep()
@@ -181,8 +182,20 @@ class Speaker:
             if sentence.strip():
                 self.say(sentence.strip())
 
+    def begin_reply(self):
+        """Call before a reply's first sentence. (Not inferred from pending == 0: with a slow LLM the
+        voice catches up and goes quiet between sentences of the same reply.)"""
+        self.audio_start = None
+
     def is_speaking(self) -> bool:
         return self.pending > 0 or time.time() - self.last_end < SPEAKING_TAIL_S
+
+    def wait_until_done(self, epoch) -> bool:
+        """Block until everything queued in this epoch has played. False if stop() cut it off.
+        Afterwards last_end is when the reply ended (or was stopped)."""
+        while self.epoch == epoch and self.pending > 0:
+            time.sleep(0.05)
+        return self.epoch == epoch
 
     def stop(self):
         with self.lock:
@@ -236,6 +249,8 @@ class Speaker:
                     cmd = None    # nothing speakable (e.g. "...")
                 try:
                     if cmd:
+                        if self.audio_start is None:
+                            self.audio_start = time.time()
                         proc = subprocess.Popen(cmd, stdin=subprocess.PIPE if pcm else None,
                                                 stderr=subprocess.DEVNULL)
                         self.player_proc = proc

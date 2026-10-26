@@ -140,6 +140,7 @@ class JarvisApp:
         self.chat.tag_configure("block",  foreground="#f38ba8", font=("Courier", 12, "bold"))
         self.chat.tag_configure("user",   foreground="#7ee787", font=("Courier", 12, "bold"))
         self.chat.tag_configure("system", foreground="#8b949e", font=("Courier", 11, "italic"))
+        self.chat.tag_configure("timing", foreground="#6e7681", font=("Courier", 10, "italic"))
 
     def tick_clock(self):
         self.time_lbl.config(text=datetime.datetime.now().strftime("%H:%M:%S  %d %b %Y"))
@@ -170,6 +171,16 @@ class JarvisApp:
                     self.append_text(f"{sender}: ", tag)
                 elif kind == "append":
                     self.append_text(args[0])
+                elif kind == "mark":             # where a reply ended: its timing line goes here later
+                    self.chat.mark_set(args[0], "end-2c")     # before the reply's blank line
+                    self.chat.mark_gravity(args[0], tk.LEFT)
+                elif kind == "timing":
+                    mark, text = args
+                    self.chat.config(state=tk.NORMAL)
+                    self.chat.insert(mark, text + "\n", "timing")
+                    self.chat.config(state=tk.DISABLED)
+                    self.chat.mark_unset(mark)
+                    self.chat.yview(tk.END)
                 elif kind == "status":
                     text, color = args
                     self.status_lbl.config(text=text, fg=color)
@@ -214,6 +225,7 @@ class JarvisApp:
 
     # ── KEYBOARD INPUT ────────────────────────────────────────────────────────
     def on_text_submit(self, event=None):
+        t0 = time.time()
         text = self.entry.get().strip()
         if not text:
             return
@@ -221,7 +233,7 @@ class JarvisApp:
         self.speaker.stop()
         self.ui_queue.put(("msg", "You", text, "user"))
         # Typed questions get on-screen answers only; voice is for spoken questions
-        threading.Thread(target=self.run_pipeline, args=(text, False), daemon=True).start()
+        threading.Thread(target=self.run_pipeline, args=(text, False, t0), daemon=True).start()
 
     def on_talk_pressed(self):
         self.speaker.stop()
@@ -246,22 +258,27 @@ class JarvisApp:
     # ── VOICE INPUT ───────────────────────────────────────────────────────────
     def handle_voice_command(self, text):
         """Called from the voice thread with a transcribed command."""
+        heard = time.time()
         self.ui_queue.put(("msg", "You (Voice)", text, "user"))
-        self.run_pipeline(text, speak=True)
+        # Timed from when they stopped talking, so it includes the pause detection and transcription
+        self.run_pipeline(text, speak=True, t0=self.voice.spoke_until or heard, heard=heard)
 
     # ── PIPELINE BRIDGE ───────────────────────────────────────────────────────
-    def run_pipeline(self, user_input: str, speak: bool):
+    def run_pipeline(self, user_input: str, speak: bool, t0=None, heard=None):
+        t0 = t0 or time.time()
         with self.pipeline_lock:
             try:
-                self._run_pipeline(user_input, speak)
+                self._run_pipeline(user_input, speak, t0, heard)
             except Exception as e:
                 print(f"[Jarvis] Pipeline error: {type(e).__name__}: {e}")
                 self.ui_queue.put(("msg", "System", f"Error: {e}", "system"))
             finally:
                 self.set_status("● STANDBY", "#00d4ff")
 
-    def _run_pipeline(self, user_input: str, speak: bool):
+    def _run_pipeline(self, user_input: str, speak: bool, t0: float, heard=None):
         streamed = []
+        first_words = None
+        spoken = False
         epoch = self.speaker.epoch    # changes when Escape/TALK/typing stops speech
 
         def speaking():
@@ -270,8 +287,10 @@ class JarvisApp:
         def on_sentence(sentence):
             # LLM replies arrive sentence by sentence: show (and speak) each immediately.
             # Checked per sentence so MUTE / Escape silence the rest of the reply.
+            nonlocal first_words, spoken
             voice = speaking()
             if not streamed:
+                first_words = time.time()
                 self.ui_queue.put(("start", AGENT_NAME, "jarvis"))
                 if voice:
                     self.set_status("● SPEAKING", "#00d4ff")
@@ -279,13 +298,17 @@ class JarvisApp:
             self.ui_queue.put(("append", sentence + " "))
             if voice:
                 self.speaker.say(sentence)
+                spoken = True
 
+        if speak:
+            self.speaker.begin_reply()
         response, source, info = self.pipeline.run(
             user_input, on_status=self.set_status, on_sentence=on_sentence
         )
 
         if streamed:
             self.ui_queue.put(("append", "\n\n"))
+            self._report_timing(t0, heard, first_words, spoken, epoch)
             return
 
         tag_map = {
@@ -306,8 +329,44 @@ class JarvisApp:
             response,
             tag_map.get(source, "jarvis")
         ))
+        first_words = time.time()
         if speaking():
             self.speaker.say_text(response)
+            spoken = bool(response.strip())
+        self._report_timing(t0, heard, first_words, spoken, epoch)
+
+    # ── TIMING ────────────────────────────────────────────────────────────────
+    def _report_timing(self, t0, heard, first_words, spoken, epoch):
+        """Show how long the reply took under it (and in the terminal): from pressing Enter, or from
+        when a voice user stopped talking, until the reply is complete — on screen, or fully spoken."""
+        self._timing_n = getattr(self, "_timing_n", 0) + 1
+        mark = f"timing{self._timing_n}"
+        self.ui_queue.put(("mark", mark))
+        start = (time.time() if first_words is None else first_words) - t0
+        parts = []
+        if heard is not None:
+            parts.append(f"understood {heard - t0:.1f}s")
+        parts.append(f"first words {start:.1f}s")
+
+        def report(total, end):
+            line = f"{total:.1f}s {end}  ·  " + "  ·  ".join(parts)
+            print(f"[Timing] {line}")
+            self.ui_queue.put(("timing", mark, line))
+
+        if not spoken:
+            report(time.time() - t0, "until the reply was on screen" if heard is None else
+                   "from when you stopped talking until the reply was on screen")
+            return
+
+        def wait_for_speech():   # off the pipeline lock, so the next question isn't held up
+            finished = self.speaker.wait_until_done(epoch)
+            if self.speaker.audio_start:
+                parts.append(f"started speaking {self.speaker.audio_start - t0:.1f}s")
+            report(self.speaker.last_end - t0,
+                   "from when you stopped talking until Jarvis finished speaking" if finished else
+                   "until the reply was stopped")
+
+        threading.Thread(target=wait_for_speech, daemon=True).start()
 
 
 # ── ENTRY POINT ───────────────────────────────────────────────────────────────
