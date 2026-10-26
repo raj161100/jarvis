@@ -136,6 +136,22 @@ Saved facts are also given to the model on every turn, so it can use them in nor
 
 ---
 
+## Personal Profile
+
+For background Jarvis should always know (your name, where you live, your work, your devices), create `~/jarvis_profile.md` on the Pi:
+
+```bash
+nano ~/jarvis_profile.md
+```
+
+Write it as short plain sentences or bullet points. Anything inside `<!-- -->` is ignored, so you can leave notes to yourself. It is loaded at startup (restart Jarvis after editing) and pre-loaded during warm-up, so it doesn't slow down your first question.
+
+- Keep it under ~1500 characters — it is included in every conversation, and longer means slower on the Pi.
+- It lives outside the repo, so it is never pushed to GitHub. Use `JARVIS_PROFILE=/path/to/file` to keep it elsewhere.
+- Anyone who talks to Jarvis can ask about what's in it — don't put passwords or secrets there.
+
+---
+
 ## How to Change the Model
 
 Set `JARVIS_MODEL` (no code change needed):
@@ -365,6 +381,7 @@ See [Voice Output and Speakers](#voice-output-and-speakers).
 |---|---|---|
 | `JARVIS_MODEL` | `qwen3.5:4b` | Ollama model to use |
 | `JARVIS_LOCATION` | `London` | Default city for weather |
+| `JARVIS_PROFILE` | `~/jarvis_profile.md` | Personal profile file |
 | `NEWS_API_KEY` | *(empty)* | NewsAPI.org key for headlines (falls back to BBC RSS) |
 | `OLLAMA_HOST` | `http://localhost:11434` | Ollama server address |
 

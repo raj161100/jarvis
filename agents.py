@@ -5,13 +5,42 @@ from ollama import Client
 
 from config import (
     MODEL, OLLAMA_HOST, SYSTEM_PROMPT, OPTS_CHAT,
-    MAX_HISTORY, MAX_MEMORIES, CACHEABLE_TOOLS
+    MAX_HISTORY, MAX_MEMORIES, CACHEABLE_TOOLS,
+    PROFILE_PATH, PROFILE_MAX_CHARS
 )
 from database import JarvisDB
 from tools import ToolHandler
 from semantic_cache import SemanticCache
 
 ollama_client = Client(host=OLLAMA_HOST)
+
+
+# ── OWNER PROFILE ─────────────────────────────────────────────────────────────
+def load_profile(path: str = PROFILE_PATH) -> str:
+    """Reads the owner's profile file, minus <!-- comments -->. '' if there isn't one."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+    except FileNotFoundError:
+        print(f"[Profile] No profile at {path}; Jarvis only knows what you ask it to remember.")
+        return ""
+    except OSError as e:
+        print(f"[Profile] Could not read {path}: {e}")
+        return ""
+    text = re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL)
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    if len(text) > PROFILE_MAX_CHARS:
+        print(f"[Profile] {path} is {len(text)} characters; only the first {PROFILE_MAX_CHARS} are used.")
+        text = text[:PROFILE_MAX_CHARS]
+    print(f"[Profile] Loaded {path} ({len(text)} characters).")
+    return text
+
+
+PROFILE = load_profile()
+# The profile lives in the system prompt (not per question) so the prefix stays identical
+# every turn and Ollama reuses it instead of re-reading it; the warm-up call pre-loads it.
+FULL_SYSTEM_PROMPT = SYSTEM_PROMPT + (f"\n\n<profile>\n{PROFILE}\n</profile>" if PROFILE else "")
 
 
 # ── ROUTER: regex → tool, no LLM call ─────────────────────────────────────────
@@ -150,7 +179,7 @@ class OrchestratorAgent:
         stream = ollama_client.chat(
             model=MODEL,
             messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": FULL_SYSTEM_PROMPT},
                 *history,
                 {"role": "user", "content": f"{context}{user_input}"},
             ],
@@ -285,7 +314,7 @@ class AgentPipeline:
             fact = m.group("fact").strip().rstrip(".")
             self.db.save_memory(fact)
             return f"Noted, sir. I'll remember that {to_second_person(fact)}."
-        if RECALL_RE.search(text):
+        if RECALL_RE.search(text) and not PROFILE:   # with a profile, the LLM answers from both
             facts = self.db.get_memories(limit=20)
             if not facts:
                 return "You haven't asked me to remember anything yet, sir."

@@ -6,3 +6,6 @@ __pycache__/
 *.wav
 .env
 .DS_Store
+
+# Personal profile (lives at ~/jarvis_profile.md on the Pi; never commit it)
+*profile.md

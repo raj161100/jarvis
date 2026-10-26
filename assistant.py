@@ -33,7 +33,7 @@ from config import (
     WAKE_WORDS, AGENT_NAME, OLLAMA_HOST, MODEL, OPTS_CHAT
 )
 from database import JarvisDB
-from agents import AgentPipeline
+from agents import AgentPipeline, FULL_SYSTEM_PROMPT
 from speech import Speaker
 
 ollama_client = Client(host=OLLAMA_HOST)
@@ -254,10 +254,13 @@ class JarvisApp:
             self.set_status("● WARMING UP", "#d29922")
             t0 = time.time()
             try:
-                # Same num_ctx/num_thread as the chat call, otherwise Ollama reloads on the first query
+                # Same num_ctx/num_thread as the chat call, otherwise Ollama reloads on the first query.
+                # Sending the real system prompt (incl. profile) pre-processes it, so the first
+                # question only pays for its own words.
                 ollama_client.chat(
                     model=MODEL,
-                    messages=[{"role": "user", "content": "ready"}],
+                    messages=[{"role": "system", "content": FULL_SYSTEM_PROMPT},
+                              {"role": "user", "content": "ready"}],
                     think=False,
                     keep_alive=-1,
                     options={**OPTS_CHAT, "num_predict": 1}
