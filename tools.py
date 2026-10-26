@@ -8,7 +8,7 @@ import urllib.request
 import urllib.parse
 import psutil
 
-from config import NEWS_API_KEY, DEFAULT_WEATHER_LOCATION
+from config import NEWS_API_KEY, DEFAULT_WEATHER_LOCATION, WEATHER_UNITS
 
 try:
     from ddgs import DDGS                    # current package name
@@ -118,10 +118,11 @@ class ToolHandler:
             with urllib.request.urlopen(url, timeout=5) as r:
                 data = json.loads(r.read())
             c    = data["current_condition"][0]
-            desc = c["weatherDesc"][0]["value"]
+            desc = c["weatherDesc"][0]["value"].strip()
+            unit, name = ("C", "Celsius") if WEATHER_UNITS == "C" else ("F", "Fahrenheit")
             return (
                 f"Current weather in {location}: {desc}. "
-                f"Temperature {c['temp_C']} degrees Celsius, feels like {c['FeelsLikeC']}. "
+                f"Temperature {c['temp_' + unit]} degrees {name}, feels like {c['FeelsLike' + unit]}. "
                 f"Humidity {c['humidity']} percent."
             )
         except Exception:

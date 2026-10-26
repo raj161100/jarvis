@@ -88,7 +88,7 @@ It is safe to re-run — finished steps are skipped.
 
 ```bash
 export NEWS_API_KEY=your_key_here
-export JARVIS_LOCATION="London"
+export JARVIS_LOCATION="New York"
 ```
 
 Without a key the news tool falls back to BBC RSS.
@@ -380,7 +380,8 @@ See [Voice Output and Speakers](#voice-output-and-speakers).
 | Variable | Default | Description |
 |---|---|---|
 | `JARVIS_MODEL` | `qwen3.5:4b` | Ollama model to use |
-| `JARVIS_LOCATION` | `London` | Default city for weather |
+| `JARVIS_LOCATION` | `New York` | Default city for weather |
+| `JARVIS_UNITS` | `F` | Weather temperature units: `F` or `C` |
 | `JARVIS_PROFILE` | `~/jarvis_profile.md` | Personal profile file |
 | `NEWS_API_KEY` | *(empty)* | NewsAPI.org key for headlines (falls back to BBC RSS) |
 | `OLLAMA_HOST` | `http://localhost:11434` | Ollama server address |
@@ -388,7 +389,7 @@ See [Voice Output and Speakers](#voice-output-and-speakers).
 To make them permanent:
 
 ```bash
-echo 'export JARVIS_LOCATION="London"' >> ~/.bashrc
+echo 'export JARVIS_LOCATION="New York"' >> ~/.bashrc
 source ~/.bashrc
 ```
 

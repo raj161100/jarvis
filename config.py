@@ -26,7 +26,8 @@ OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 AGENT_NAME  = "Jarvis"
 # Matched as whole words in the whisper transcript. Includes common tiny.en mishearings of "Jarvis".
 WAKE_WORDS  = ["jarvis", "jarvas", "jervis", "javis", "aami"]
-DEFAULT_WEATHER_LOCATION = os.environ.get("JARVIS_LOCATION", "London")
+DEFAULT_WEATHER_LOCATION = os.environ.get("JARVIS_LOCATION", "New York")
+WEATHER_UNITS = os.environ.get("JARVIS_UNITS", "F").upper()   # "F" (Fahrenheit) or "C" (Celsius)
 
 # ── MEMORY / CACHE ────────────────────────────────────────────────────────────
 MAX_HISTORY        = 10    # turns sent to the LLM — each extra turn adds prefill time on the Pi
