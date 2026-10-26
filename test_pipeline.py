@@ -1,6 +1,7 @@
 """
-Simulated pipeline test — runs without the GUI.
-Type queries and see the full pipeline response in the terminal.
+Pipeline simulator — runs on the Pi without the GUI, microphone or speaker.
+Type queries and see the full pipeline response (with per-stage timings) in the terminal.
+Useful for checking Ollama and response speed independently of audio.
 Press Ctrl+C to quit.
 """
 import sys
@@ -21,8 +22,15 @@ print("="*55 + "\n")
 db       = JarvisDB(config.DB_PATH)
 pipeline = AgentPipeline(db)
 
+
 def on_status(msg, _color):
     print(f"  [{msg.strip()}]")
+
+
+def on_sentence(sentence):
+    # LLM replies stream in sentence by sentence, exactly as they'd be spoken
+    print(f"  >> {sentence}", flush=True)
+
 
 while True:
     try:
@@ -38,25 +46,25 @@ while True:
     t0 = time.time()
 
     try:
-        response, source, parsed = pipeline.run(query, on_status=on_status)
+        response, source, info = pipeline.run(query, on_status=on_status, on_sentence=on_sentence)
         elapsed = time.time() - t0
 
         source_label = {
-            "tool":    "INSTANT (tool)",
-            "cache":   "CACHED",
-            "blocked": "BLOCKED",
-            "llm":     "LLM",
+            "tool":   "INSTANT (tool)",
+            "cache":  "CACHED",
+            "memory": "MEMORY",
+            "llm":    "LLM (streamed above)",
+            "error":  "ERROR",
         }.get(source, source)
 
         print(f"\nJarvis [{source_label}] ({elapsed:.1f}s):")
-        print(f"  {response}")
+        if source != "llm":
+            print(f"  {response}")
 
-        if parsed.get("tool_name") and parsed["tool_name"] != "none":
-            print(f"  Tool used : {parsed['tool_name']}")
-        if parsed.get("cache_score"):
-            print(f"  Cache score: {parsed['cache_score']:.3f}")
-        if parsed.get("complexity"):
-            print(f"  Complexity : {parsed['complexity']}")
+        if info.get("tool_name") and info["tool_name"] not in ("none", "memory"):
+            print(f"  Tool used  : {info['tool_name']}")
+        if info.get("cache_score"):
+            print(f"  Cache score: {info['cache_score']:.3f}")
 
     except Exception as e:
         print(f"  ERROR: {type(e).__name__}: {e}")

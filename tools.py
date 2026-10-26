@@ -1,3 +1,6 @@
+import os
+import re
+import platform
 import subprocess
 import datetime
 import json
@@ -5,13 +8,17 @@ import urllib.request
 import urllib.parse
 import psutil
 
-from config import NEWS_API_KEY
+from config import NEWS_API_KEY, DEFAULT_WEATHER_LOCATION
 
 try:
-    from duckduckgo_search import DDGS
+    from ddgs import DDGS                    # current package name
     DDG_AVAILABLE = True
 except ImportError:
-    DDG_AVAILABLE = False
+    try:
+        from duckduckgo_search import DDGS   # old name, still works with a warning
+        DDG_AVAILABLE = True
+    except ImportError:
+        DDG_AVAILABLE = False
 
 
 class ToolHandler:
@@ -20,13 +27,15 @@ class ToolHandler:
       Offline — time, date, system stats. Always available, instant.
       Online  — weather, news, search, Wikipedia. Degrade gracefully if offline.
 
-    Tool names must match exactly what ParseAndSecureAgent returns in 'tool_name'.
+    Tool names must match the routes in agents.TOOL_ROUTES.
+    A tool returns None when it has nothing useful, so the LLM answers instead.
     """
 
     TOOL_MAP = {
         "time_query":    "_time_query",
         "date_query":    "_date_query",
         "system_status": "_system_status",
+        "machine_info":  "_machine_info",
         "weather":       "_weather",
         "news":          "_news",
         "web_search":    "_web_search",
@@ -61,6 +70,26 @@ class ToolHandler:
             f"Core temperature {temp}, thermal status {throttle}."
         )
 
+    def _machine_info(self, _):
+        try:
+            with open("/proc/device-tree/model") as f:
+                board = f.read().strip("\x00\n ")
+        except Exception:
+            board = platform.machine()
+        os_name = platform.system()
+        try:
+            with open("/etc/os-release") as f:
+                m = re.search(r'^PRETTY_NAME="?([^"\n]+)', f.read(), re.M)
+                if m:
+                    os_name = m.group(1)
+        except Exception:
+            pass
+        ram_gb = psutil.virtual_memory().total / 1024**3
+        return (
+            f"I'm running on a {board} with {os.cpu_count()} CPU cores and {ram_gb:.0f} gigabytes of RAM, "
+            f"under {os_name}. My code is the Jarvis project in Python, using a local language model through Ollama."
+        )
+
     def _pi_temp(self):
         try:
             r = subprocess.run(["vcgencmd", "measure_temp"], capture_output=True, text=True)
@@ -83,7 +112,7 @@ class ToolHandler:
     # ── ONLINE — no API key needed ────────────────────────────────────────────
 
     def _weather(self, entities):
-        location = entities[0] if entities else "London"
+        location = entities[0] if entities else DEFAULT_WEATHER_LOCATION
         try:
             url = f"https://wttr.in/{urllib.parse.quote(location)}?format=j1"
             with urllib.request.urlopen(url, timeout=5) as r:
@@ -122,33 +151,35 @@ class ToolHandler:
 
     def _web_search(self, entities):
         if not DDG_AVAILABLE:
-            return "Web search requires: pip install duckduckgo-search"
+            return "Web search requires: pip install ddgs"
         query = " ".join(entities) if entities else ""
         if not query:
-            return "I need a search query to look something up."
+            return None
         try:
             with DDGS() as ddg:
                 results = list(ddg.text(query, max_results=3))
-            if not results:
-                return "No results found for that search."
             summary = ". ".join(r["body"][:120] for r in results if r.get("body"))
-            return f"Here's what I found: {summary}"
+            return f"Here's what I found: {summary}" if summary else None
         except Exception as e:
-            return f"Search failed: {e}"
+            print(f"[Tools] Web search failed: {e}")
+            return None
 
     def _wikipedia(self, entities):
-        topic = urllib.parse.quote(entities[0] if entities else "")
-        if not topic:
-            return "What topic would you like me to look up?"
+        if not entities or not entities[0].strip():
+            return None
         try:
+            topic = urllib.parse.quote(entities[0].strip().replace(" ", "_"))
             req = urllib.request.Request(
                 f"https://en.wikipedia.org/api/rest_v1/page/summary/{topic}",
                 headers={"User-Agent": "JarvisPI/1.0"}
             )
             with urllib.request.urlopen(req, timeout=5) as r:
                 data = json.loads(r.read())
-            extract   = data.get("extract", "")
+            extract = data.get("extract", "")
+            # No article or a disambiguation page — let the LLM answer instead
+            if not extract or data.get("type") == "disambiguation" or "may refer to" in extract:
+                return None
             sentences = extract.split(". ")[:2]
-            return ". ".join(sentences) + "."
+            return ". ".join(sentences).rstrip(".") + "."
         except Exception:
-            return "I couldn't find a Wikipedia article on that topic."
+            return None

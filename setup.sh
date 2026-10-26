@@ -13,7 +13,7 @@ echo ""
 echo "[1/7] Installing system packages..."
 sudo apt update -qq
 sudo apt install -y \
-    python3-pip python3-venv python3-tk \
+    python3-pip python3-venv python3-tk python3-dev \
     portaudio19-dev \
     alsa-utils espeak-ng \
     git cmake build-essential \
@@ -55,7 +55,7 @@ fi
 sudo mkdir -p /etc/systemd/system/ollama.service.d
 cat <<EOF | sudo tee /etc/systemd/system/ollama.service.d/pi5.conf
 [Service]
-Environment="OLLAMA_FLASH_ATTN=1"
+Environment="OLLAMA_FLASH_ATTENTION=1"
 Environment="OLLAMA_MAX_LOADED_MODELS=1"
 Environment="OLLAMA_KEEP_ALIVE=-1"
 Environment="OLLAMA_NUM_PARALLEL=1"
@@ -66,7 +66,6 @@ sleep 3
 
 echo "[6/7] Pulling LLM models (this may take a while on first run)..."
 ollama pull qwen3.5:4b
-ollama pull nomic-embed-text
 
 # ── PIPER TTS (British voice) ─────────────────────────────────────────────────
 echo "[7/7] Installing Piper TTS..."
@@ -89,21 +88,21 @@ fi
 cd -
 
 # ── WHISPER.CPP ───────────────────────────────────────────────────────────────
-if [ ! -f ~/whisper.cpp/main ]; then
+# Note: upstream renamed 'main' to 'whisper-cli'; build/bin/main is a stub that only prints a warning
+[ -d ~/whisper.cpp/.git ] || git clone --depth=1 https://github.com/ggml-org/whisper.cpp ~/whisper.cpp
+if [ ! -x ~/whisper.cpp/build/bin/whisper-cli ]; then
     echo "Building Whisper.cpp for wake word detection..."
-    cd ~
-    git clone --depth=1 https://github.com/ggerganov/whisper.cpp
-    cd whisper.cpp
+    cd ~/whisper.cpp
     cmake -B build -DGGML_NATIVE=ON
-    cmake --build build -j4
-    cp build/bin/main .
-    mkdir -p models
-    bash ./models/download-ggml-model.sh tiny.en
+    cmake --build build -j4 --config Release
     cd -
     echo "Whisper.cpp built."
 else
     echo "Whisper.cpp already built."
 fi
+# tiny.en scans for the wake word; base.en transcribes commands more accurately
+[ -f ~/whisper.cpp/models/ggml-tiny.en.bin ] || bash ~/whisper.cpp/models/download-ggml-model.sh tiny.en
+[ -f ~/whisper.cpp/models/ggml-base.en.bin ] || bash ~/whisper.cpp/models/download-ggml-model.sh base.en
 
 # ── DONE ──────────────────────────────────────────────────────────────────────
 echo ""

@@ -1,6 +1,6 @@
 # J.A.R.V.I.S — Raspberry Pi 5 Offline AI Assistant
 
-A fully offline AI assistant for Raspberry Pi 5 with a British accent, multi-agent pipeline, persistent memory, and live data tools. No cloud required — everything runs on-device.
+A fully offline AI assistant for Raspberry Pi 5 with a British accent, streaming voice replies, persistent memory, and live data tools. No cloud required — everything runs on-device.
 
 ---
 
@@ -8,22 +8,23 @@ A fully offline AI assistant for Raspberry Pi 5 with a British accent, multi-age
 
 | Feature | Detail |
 |---|---|
-| **LLM** | Ollama (qwen3.5:4b) — 9.4 t/s on Pi 5, thinking + tool support |
-| **Speech input** | Whisper.cpp (tiny.en model) — offline STT |
-| **Wake word** | Configurable list, detected by Whisper without a cloud service |
+| **LLM** | Ollama (qwen3.5:4b, thinking disabled) — one streaming call per turn |
+| **Speech input** | Whisper.cpp — `tiny.en` scans for the wake word, `base.en` transcribes commands |
+| **Wake word** | "Hey Jarvis …" in one breath, or "Jarvis" → beep → command |
+| **Push-to-talk** | **TALK** button on the touchscreen skips the wake word |
 | **Voice output** | Piper TTS — neural British voice (Alan, en_GB); espeak-ng fallback |
-| **Multi-agent pipeline** | Parse+Security → Orchestrator → Verification → Persist |
-| **Persistent memory** | SQLite — remembers facts across reboots |
-| **Conversation history** | Full chat history stored per session |
-| **Semantic cache** | Sentence-transformers similarity search (cosine, threshold 0.90) — ~70ms lookup |
-| **Exact hash cache** | MD5 lookup for identical queries — instant |
-| **Security audit log** | Every query classified and logged with threat level |
+| **Sentence-streaming TTS** | Each sentence is spoken as soon as the LLM finishes it |
+| **Half-duplex mic** | Mic input is ignored while Jarvis is speaking, so it never hears itself |
+| **Regex router** | Tool queries (time, weather, Wikipedia…) are routed instantly, no LLM call |
+| **Persistent memory** | "Remember that …" / "What do you know about me" / "Forget that" |
+| **Conversation history** | Last 10 turns sent to the model as context |
+| **Semantic cache** | Reuses web search / Wikipedia answers for similar questions |
+| **Security audit log** | Suspicious prompts are logged (never blocked — Jarvis has no risky tools) |
 | **Live tools** | Weather, news, web search, Wikipedia |
-| **Offline tools** | Time, date, CPU/RAM/temperature/throttle status |
-| **Sentence-streaming TTS** | First sentence spoken in ~3s while rest generates |
+| **Offline tools** | Time, date, CPU/RAM/temperature status, machine info |
 | **800×480 GUI** | Jarvis-themed dark terminal UI with colour-coded sources |
-| **Model warm-up** | Dummy query at startup eliminates first-query cold-start |
-| **Pi 5 optimisations** | Flash attention, PCIe Gen3, swap disabled, 4-thread pinning |
+| **Model warm-up** | Model is loaded and pinned in RAM at startup (`keep_alive=-1`) |
+| **Pi 5 optimisations** | Flash attention, PCIe Gen3, swap disabled, 4-thread pinning, temp audio in `/dev/shm` |
 
 ---
 
@@ -34,9 +35,9 @@ A fully offline AI assistant for Raspberry Pi 5 with a British accent, multi-age
 | **Board** | Raspberry Pi 5 (8 GB RAM minimum) |
 | **Storage** | 64 GB SD card or faster M.2 SSD via HAT |
 | **Microphone** | USB microphone (any ALSA-compatible device) |
-| **Speaker** | USB audio adapter + speaker, or 3.5 mm DAC HAT |
+| **Speaker** | USB speaker, Bluetooth speaker, HDMI audio, or 3.5 mm DAC HAT |
 | **Cooling** | Active fan — mandatory; CPU reaches 75 °C under LLM load |
-| **Display** | 800×480 screen connected via HDMI or DSI (optional for GUI mode) |
+| **Display** | 800×480 screen connected via HDMI or DSI |
 
 ---
 
@@ -44,12 +45,14 @@ A fully offline AI assistant for Raspberry Pi 5 with a British accent, multi-age
 
 ```
 jarvis/
-├── assistant.py      # Main app — GUI, voice I/O, TTS, pipeline bridge
-├── agents.py         # Four-agent pipeline (Parse+Security, Orchestrator, Verification)
+├── assistant.py      # Main app — GUI, wake word, push-to-talk, STT, pipeline bridge
+├── speech.py         # Speaker — Piper TTS synth + playback queue, beep, stop
+├── agents.py         # Router, memory commands, streaming LLM orchestrator, pipeline
 ├── tools.py          # Tool handler — weather, news, search, Wikipedia, time, system
 ├── database.py       # SQLite wrapper — memory, history, cache, security log
 ├── semantic_cache.py # Sentence-transformer similarity cache
-├── config.py         # Central config — paths, model names, thresholds, prompts
+├── config.py         # Central config — paths, model, options, prompt
+├── test_pipeline.py  # Text-only pipeline test (no GUI / mic needed)
 ├── requirements.txt  # Python dependencies
 ├── setup.sh          # One-shot Pi 5 setup script
 └── README.md
@@ -69,77 +72,103 @@ chmod +x setup.sh
 ```
 
 `setup.sh` handles everything:
-- System packages (portaudio, espeak-ng, cmake, ffmpeg)
+- System packages (portaudio, espeak-ng, cmake, ffmpeg, python3-tk)
 - Disables swap (mandatory for LLM performance on SD card)
 - Enables PCIe Gen3 if you have an M.2 HAT
 - Python virtual environment + pip packages
 - Ollama install + Pi 5 systemd config (flash attention, keep-alive)
-- Model pull: `qwen3.5:4b` and `nomic-embed-text`
+- Model pull: `qwen3.5:4b`
 - Piper TTS binary + British voice (Alan, medium quality)
-- Whisper.cpp build from source
+- Whisper.cpp build (`whisper-cli`) + `tiny.en` and `base.en` models
 
-### 2. Optional — set your NewsAPI key
+It is safe to re-run — finished steps are skipped.
+
+### 2. Optional — set your NewsAPI key and home city
 
 ```bash
 export NEWS_API_KEY=your_key_here
+export JARVIS_LOCATION="London"
 ```
 
-Without this the news tool falls back to BBC RSS (still works, no key needed).
+Without a key the news tool falls back to BBC RSS.
 
 ### 3. Run
 
+Run from a terminal on the Pi desktop (the GUI needs a display):
+
 ```bash
+cd ~/jarvis
 source ai_env/bin/activate
 python assistant.py
 ```
 
-Say **"Hey Jarvis"** or **"Jarvis"** to activate voice input. You can also type in the text box.
+Wait until the status changes from **WARMING UP** to **STANDBY** / **LISTENING** (the first load of the model takes about a minute), then:
+
+- Say **"Hey Jarvis, what time is it?"** in one breath, or
+- Say **"Jarvis"**, wait for the beep, then speak your command, or
+- Tap **TALK**, wait for the beep, then speak, or
+- Type in the text box and press Enter.
+
+Press **Escape** to stop Jarvis talking.
+
+### 4. Text-only test
+
+To check the model and tools without the GUI or microphone:
+
+```bash
+python test_pipeline.py
+```
 
 ---
 
-## How to Change or Add a Model
+## Memory Commands
 
-### Switch to a different model
+These are handled instantly in code (no LLM call):
 
-1. Pull the model with Ollama:
-   ```bash
-   ollama pull mistral:7b
-   ```
+| Say | Effect |
+|---|---|
+| "Remember that my sister is Priya" | Saves the fact |
+| "What do you know about me?" | Reads back saved facts |
+| "Forget that" | Deletes the most recently saved fact |
 
-2. Edit `config.py`:
-   ```python
-   MODEL = "mistral:7b"   # was "qwen3.5:4b"
-   ```
+Saved facts are also given to the model on every turn, so it can use them in normal answers.
 
-3. Restart the assistant. The new model loads automatically.
+---
 
-**Recommended models for Pi 5 (8 GB):**
+## How to Change the Model
 
-| Model | RAM | Speed (Pi 5) | Notes |
-|---|---|---|---|
-| `qwen3.5:4b` *(default)* | 4.2 GB | ~9 t/s | Best quality/speed balance; thinking + tools |
-| `llama3.2:3b` | 2.0 GB | ~12 t/s | Faster, lower quality |
-| `phi3.5:3.8b` | 2.3 GB | ~11 t/s | Strong reasoning for its size |
-| `gemma3:4b` | 3.5 GB | ~8 t/s | Good instruction following |
-| `mistral:7b` | 4.7 GB | ~5 t/s | Slower but higher quality responses |
+Set `JARVIS_MODEL` (no code change needed):
 
-Do not load two large models simultaneously — the Pi 5 has 8 GB total and the OS + Piper take ~1.5 GB.
+```bash
+ollama pull qwen3.5:2b
+JARVIS_MODEL=qwen3.5:2b python assistant.py
+```
+
+Or edit `MODEL` in `config.py`.
+
+**Models for Pi 5 (8 GB), CPU only:**
+
+| Model | Notes |
+|---|---|
+| `qwen3.5:4b` *(default)* | Best answers; ~3 tokens/s, so long replies take a while |
+| `qwen3.5:2b` | Roughly twice as fast; a little less accurate |
+| `gemma4:e2b` | Fast; weaker at following instructions |
+
+Do not load two large models at once — the Pi 5 has 8 GB total and the OS + Piper take ~1.5 GB.
 
 ### Tune model options
 
-In `config.py` there are three option sets:
+`config.py` has a single option set used for every call:
 
 ```python
-OPTS_FAST   = {"temperature": 0.0, "num_predict": 200, "num_ctx": 1024,  "num_thread": 4}
-OPTS_MAIN   = {"temperature": 0.7, "num_predict": 180, "num_ctx": 4096,  "num_thread": 4}
-OPTS_VERIFY = {"temperature": 0.1, "num_predict": 300, "num_ctx": 2048,  "num_thread": 4}
+NUM_CTX    = 2048
+NUM_THREAD = 4
+OPTS_CHAT  = {"temperature": 0.7, "num_predict": 160, "num_ctx": NUM_CTX, "num_thread": NUM_THREAD}
 ```
 
-- `OPTS_FAST` — used by ParseAndSecureAgent (speed matters most)
-- `OPTS_MAIN` — used by OrchestratorAgent (quality matters most)
-- `OPTS_VERIFY` — used by VerificationAgent (accuracy matters most)
-- Raise `num_predict` for longer responses; lower it to cut latency
-- Raise `num_ctx` for longer memory windows; lower it to reduce prefill time
+- Keep the same `num_ctx` / `num_thread` everywhere — Ollama reloads the model whenever they change.
+- Lower `num_predict` for shorter, faster replies.
+- Raise `NUM_CTX` for more history; it makes every reply slower on the Pi.
 
 ---
 
@@ -147,64 +176,38 @@ OPTS_VERIFY = {"temperature": 0.1, "num_predict": 300, "num_ctx": 2048,  "num_th
 
 ### Step 1 — Add the method to `tools.py`
 
-Inside the `ToolHandler` class, add a `_my_tool` method:
+Inside the `ToolHandler` class, add a `_my_tool` method. Return `None` if it found nothing — the question then falls through to the LLM.
 
 ```python
-def _my_tool(self, entities: list) -> str:
-    """Example: fetch a stock price."""
-    import requests
+def _stock_price(self, entities: list) -> str:
     symbol = entities[0] if entities else "AAPL"
     try:
         r = requests.get(f"https://api.example.com/price/{symbol}", timeout=5)
-        data = r.json()
-        return f"The price of {symbol} is ${data['price']:.2f}."
-    except Exception as e:
-        return f"Unable to fetch stock price: {e}"
+        return f"The price of {symbol} is ${r.json()['price']:.2f}."
+    except Exception:
+        return None
 ```
 
-### Step 2 — Register it in `TOOL_MAP`
-
-Still in `tools.py`:
+### Step 2 — Register it in `TOOL_MAP` (`tools.py`)
 
 ```python
 TOOL_MAP = {
-    "time_query":    self._time_query,
-    "date_query":    self._date_query,
-    "system_status": self._system_status,
-    "weather":       self._weather,
-    "news":          self._news,
-    "web_search":    self._web_search,
-    "wikipedia":     self._wikipedia,
-    "stock_price":   self._my_tool,   # ← add this line
-}
-```
-
-### Step 3 — Add it to the ParseAndSecureAgent routing prompt in `agents.py`
-
-Find the `PROMPT` string inside `ParseAndSecureAgent` and add a line to the routing table:
-
-```
-  stock_price  → asking about a share price, stock, market value
-```
-
-### Step 4 — Optionally add a quick regex shortcut in `agents.py`
-
-For queries with obvious patterns (avoids an LLM call entirely):
-
-```python
-QUICK_TOOL_PATTERNS = {
     ...
-    r"\b(stock price|share price|how much is|ticker)\b": "stock_price",
+    "stock_price": "_stock_price",
 }
 ```
 
-### Step 5 — Prevent caching for real-time data
+### Step 3 — Add a route in `agents.py`
 
-If your tool returns time-sensitive data, add the tool name to `NO_CACHE` in `config.py`:
+Add a regex to `TOOL_ROUTES`. A named group `arg` becomes the tool's entity:
 
 ```python
-NO_CACHE = {"time_query", "date_query", "system_status", "stock_price"}
+(r"\b(?:stock|share) price (?:of|for) (?P<arg>\w+)", "stock_price"),
 ```
+
+### Step 4 — Caching (optional)
+
+Only tools listed in `CACHEABLE_TOOLS` (`config.py`) use the semantic cache. Leave real-time tools out.
 
 ---
 
@@ -213,44 +216,33 @@ NO_CACHE = {"time_query", "date_query", "system_status", "stock_price"}
 In `config.py`:
 
 ```python
-WAKE_WORDS = ["jarvis", "hey jarvis", "ok jarvis", "computer"]
+WAKE_WORDS = ["jarvis", "jarvas", "jervis", "javis", "aami"]
 ```
 
-Add any phrase you want. Whisper.cpp transcribes the audio and checks if any wake word appears in the transcript. Shorter phrases are more reliable.
+Whisper `tiny.en` often mishears names, so include common misspellings. An optional "hey / hi / ok" before the wake word is handled automatically.
 
 ---
 
-## Agent Pipeline Explained
+## Pipeline Explained
 
 ```
-User input
+User input (voice or text)
     │
-    ├─ Quick regex check ──────────────── instant → tool result
+    ├─ Memory command? ───────────────── instant → saved / recalled / forgotten
     │
-    ├─ Semantic cache lookup ──────────── ~70ms  → cached response
+    ├─ Regex router matches a tool?
+    │       ├─ semantic cache (search/Wikipedia only) → cached answer
+    │       ├─ tool answer ──────────────── instant / ~1s network
+    │       └─ tool found nothing ───────── falls through ↓
     │
-    ├─ ParseAndSecureAgent ────────────── 2-3s
-    │       classifies input + security check in one LLM call
-    │       ├─ BLOCKED ────────────────────────── refusal message
-    │       └─ tool detected → tool handler ────── instant result
+    ├─ OrchestratorAgent ─────────────── ONE streaming LLM call
+    │       memory + history + tool result as context
+    │       each sentence is spoken as soon as it is generated
     │
-    ├─ OrchestratorAgent ──────────────── 5-15s
-    │       main reasoning with memory + history
-    │
-    ├─ VerificationAgent (complex only) ── 2-3s
-    │       checks voice-friendliness, brevity, relevance
-    │
-    └─ Persist to DB + semantic cache
+    └─ Persist to DB (errors are never saved or cached)
 ```
 
-**Agents:**
-
-| Agent | File | Purpose |
-|---|---|---|
-| `ParseAndSecureAgent` | `agents.py` | Classifies input + security filter in one call |
-| `OrchestratorAgent` | `agents.py` | Main reasoning, uses memory + history |
-| `VerificationAgent` | `agents.py` | Quality check — voice-friendly, on-topic, brief |
-| Tool handler | `tools.py` | Fetches real data for routed queries |
+Per-stage timings are printed in the terminal as `[Pipeline] …` lines, and speech-to-text timings as `[Jarvis] STT …`.
 
 ---
 
@@ -258,110 +250,111 @@ User input
 
 SQLite database at `~/jarvis.db` (path set in `config.py`).
 
-| Table | Columns | Purpose |
-|---|---|---|
-| `memories` | `id, content, category, session_id, timestamp` | Facts Jarvis remembers long-term |
-| `conversations` | `id, role, content, category, session_id, timestamp` | Full chat history per session |
-| `response_cache` | `id, input_hash, response, category, timestamp` | Exact MD5 hash cache (24 hr TTL) |
-| `semantic_cache` | `id, query, response, category, embedding_json, timestamp` | Similarity cache with stored embeddings |
-| `security_log` | `id, input_text, threat_level, block_reason, session_id, timestamp` | Security audit trail |
+| Table | Purpose |
+|---|---|
+| `memories` | Facts Jarvis remembers long-term |
+| `conversations` | Chat history |
+| `response_cache` | Exact-match cache (legacy) |
+| `semantic_cache` | Similarity cache with stored embeddings |
+| `security_log` | Audit trail of every query |
 
 To inspect the database:
 
 ```bash
 sqlite3 ~/jarvis.db ".tables"
-sqlite3 ~/jarvis.db "SELECT * FROM memories ORDER BY timestamp DESC LIMIT 10;"
-sqlite3 ~/jarvis.db "SELECT threat_level, input_text FROM security_log ORDER BY timestamp DESC;"
+sqlite3 ~/jarvis.db "SELECT * FROM memories ORDER BY id DESC LIMIT 10;"
+```
+
+To start with a clean history (keeps memories):
+
+```bash
+sqlite3 ~/jarvis.db "DELETE FROM conversations; DELETE FROM semantic_cache;"
 ```
 
 ---
 
 ## Semantic Cache Tuning
 
-The semantic cache stores embeddings of past queries and reuses responses when a new query is similar enough.
-
 In `config.py`:
 
 ```python
-SEMANTIC_THRESHOLD = 0.90  # cosine similarity — raise to be stricter, lower to reuse more
+SEMANTIC_THRESHOLD = 0.90           # raise to be stricter, lower to reuse more
+CACHEABLE_TOOLS    = {"wikipedia", "web_search"}
 ```
 
-- `0.95` — near-identical queries only (very conservative)
-- `0.90` — default; catches rephrased versions of the same question
-- `0.80` — aggressive reuse; may return wrong cached answer for distinct questions
-
-To clear the semantic cache:
-
-```bash
-sqlite3 ~/jarvis.db "DELETE FROM semantic_cache;"
-```
-
-The in-memory embedding matrix is rebuilt from SQLite on each startup.
+To clear it: `sqlite3 ~/jarvis.db "DELETE FROM semantic_cache;"`
 
 ---
 
-## Voice Options (Piper TTS)
+## Voice Output and Speakers
 
-The default voice is **Alan** (en_GB, medium quality). Other available British voices:
+Jarvis speaks with the Piper neural voice and plays it through `aplay`, so it uses whatever the Pi's **default audio output** is — HDMI, a USB speaker, or a Bluetooth speaker.
+
+**USB speaker:** plug it in, then pick it as the output from the volume icon on the Pi desktop.
+
+**Bluetooth speaker:** pair it from the Bluetooth icon on the Pi desktop (or `bluetoothctl` → `scan on` → `pair <MAC>` → `connect <MAC>` → `trust <MAC>`), then pick it from the volume icon. Bluetooth adds a little delay before each sentence.
+
+From a terminal:
+
+```bash
+wpctl status                 # list outputs (Sinks); * marks the default
+wpctl set-default <id>       # make a sink the default
+speaker-test -t wav -c 2     # test sound (Ctrl+C to stop)
+```
+
+### Change the voice
 
 | Voice | File | Character |
 |---|---|---|
 | `en_GB-alan-medium` *(default)* | `en_GB-alan-medium.onnx` | Male, clear, neutral British |
 | `en_GB-alan-low` | `en_GB-alan-low.onnx` | Same speaker, faster/smaller |
-| `en_GB-jenny-dioco-medium` | `en_GB-jenny_dioco-medium.onnx` | Female British |
+| `en_GB-jenny_dioco-medium` | `en_GB-jenny_dioco-medium.onnx` | Female British |
 | `en_GB-cori-high` | `en_GB-cori-high.onnx` | Female, highest quality |
 | `en_US-ryan-high` | `en_US-ryan-high.onnx` | American male, highest quality |
 
-To switch voice:
-
 1. Download the `.onnx` and `.onnx.json` files from [HuggingFace rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices) into `~/piper/`.
-2. Edit `config.py`:
-   ```python
-   PIPER_MODEL = os.path.expanduser("~/piper/en_GB-cori-high.onnx")
-   ```
+2. Edit `PIPER_MODEL` in `config.py`.
 
 ---
 
 ## Troubleshooting
 
+### Startup messages
+`assistant.py` checks its dependencies at startup and prints what is missing in the chat window (Piper, `whisper-cli`, Whisper models, Ollama model).
+
 ### Ollama not responding
 ```bash
 sudo systemctl status ollama
 sudo systemctl restart ollama
-ollama list   # check models are pulled
+ollama list   # check the model is pulled
+ollama ps     # check it is loaded
 ```
+
+### Voice is never recognised
+- Watch the terminal for `[Jarvis] STT ggml-tiny.en.bin 0.8s: '…'` lines — they show exactly what Whisper heard.
+- No STT lines at all → check the mic: `arecord -l` and
+  `python -c "import speech_recognition as sr; print(sr.Microphone.list_microphone_names())"`
+- `whisper-cli not found` → build it: `cd ~/whisper.cpp && cmake -B build && cmake --build build -j4 --config Release`
 
 ### No audio output
 ```bash
-aplay -l                  # list audio devices
-aplay /usr/share/sounds/alsa/Front_Left.wav   # test playback
+aplay -l
+speaker-test -t wav -c 2
 ```
-Set the correct device in `~/.asoundrc` if needed.
+See [Voice Output and Speakers](#voice-output-and-speakers).
 
-### Microphone not detected
-```bash
-arecord -l                # list recording devices
-python -c "import speech_recognition as sr; print(sr.Microphone.list_microphone_names())"
-```
-
-### TTS too slow / stuttering
-- Check Ollama is still loaded: `ollama ps`
-- Ensure swap is off: `free -h` (Swap line should show 0)
-- Lower `OPTS_MAIN["num_predict"]` in `config.py` for shorter responses
+### Replies are slow
+- Check the `[Pipeline]` timings in the terminal.
+- `ollama ps` should show the model loaded "Forever".
+- Swap must be off: `free -h`.
+- Try `JARVIS_MODEL=qwen3.5:2b`, or lower `num_predict` in `config.py`.
 
 ### CPU overheating (above 80 °C)
-- Verify fan is running: `vcgencmd measure_temp`
-- The Pi 5 throttles at 85 °C — responses will slow down
-- Check throttle flags: `vcgencmd get_throttled` (0x0 means no throttling)
-
-### Model responses in wrong format / errors
-- The model occasionally returns malformed JSON — the pipeline catches this and returns a safe fallback
-- Try a different model (see model table above)
-- Check Ollama logs: `journalctl -u ollama -n 50`
+- `vcgencmd measure_temp`
+- `vcgencmd get_throttled` (0x0 means no throttling)
 
 ### Semantic cache returning wrong answers
-- Raise `SEMANTIC_THRESHOLD` in `config.py` (e.g. to `0.95`)
-- Or clear it: `sqlite3 ~/jarvis.db "DELETE FROM semantic_cache;"`
+- Raise `SEMANTIC_THRESHOLD`, or clear it: `sqlite3 ~/jarvis.db "DELETE FROM semantic_cache;"`
 
 ---
 
@@ -369,19 +362,17 @@ python -c "import speech_recognition as sr; print(sr.Microphone.list_microphone_
 
 | Variable | Default | Description |
 |---|---|---|
-| `NEWS_API_KEY` | *(empty)* | NewsAPI.org key for headlines (falls back to BBC RSS without it) |
-| `OLLAMA_HOST` | `http://localhost:11434` | Override if Ollama runs on another machine |
+| `JARVIS_MODEL` | `qwen3.5:4b` | Ollama model to use |
+| `JARVIS_LOCATION` | `London` | Default city for weather |
+| `NEWS_API_KEY` | *(empty)* | NewsAPI.org key for headlines (falls back to BBC RSS) |
+| `OLLAMA_HOST` | `http://localhost:11434` | Ollama server address |
 
----
-
-## Adding a NewsAPI Key (Permanent)
+To make them permanent:
 
 ```bash
-echo 'export NEWS_API_KEY=your_key_here' >> ~/.bashrc
+echo 'export JARVIS_LOCATION="London"' >> ~/.bashrc
 source ~/.bashrc
 ```
-
-Get a free key at [newsapi.org](https://newsapi.org) — 100 requests/day on the free tier.
 
 ---
 
