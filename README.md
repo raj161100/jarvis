@@ -13,6 +13,7 @@ A fully offline AI assistant for Raspberry Pi 5 with a British accent, streaming
 | **Wake word** | "Hey Jarvis …" in one breath, or "Jarvis" → beep → command |
 | **Push-to-talk** | **TALK** button on the touchscreen skips the wake word |
 | **Voice output** | Piper TTS — neural British voice (Alan, en_GB); espeak-ng fallback |
+| **Reply mode** | Spoken questions get spoken replies; typed questions are answered on screen only; **MUTE** button silences voice |
 | **Sentence-streaming TTS** | Each sentence is spoken as soon as the LLM finishes it |
 | **Half-duplex mic** | Mic input is ignored while Jarvis is speaking, so it never hears itself |
 | **Regex router** | Tool queries (time, weather, Wikipedia…) are routed instantly, no LLM call |
@@ -107,9 +108,9 @@ Wait until the status changes from **WARMING UP** to **STANDBY** / **LISTENING**
 - Say **"Hey Jarvis, what time is it?"** in one breath, or
 - Say **"Jarvis"**, wait for the beep, then speak your command, or
 - Tap **TALK**, wait for the beep, then speak, or
-- Type in the text box and press Enter.
+- Type in the text box and press Enter — typed questions are answered on screen only.
 
-Press **Escape** to stop Jarvis talking.
+Spoken questions are answered on screen **and** out loud. Tap **MUTE** to keep voice replies on screen too (tap again to unmute). Press **Escape** to stop Jarvis talking.
 
 ### 4. Text-only test
 

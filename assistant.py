@@ -80,6 +80,7 @@ class JarvisApp:
         self.ptt_event     = threading.Event()   # TALK button pressed
         self.running       = True
         self.voice_ready   = False
+        self.muted         = False               # MUTE button: replies shown on screen only
         self.cmd_model     = WHISPER_MODEL
         self._last_status  = None
 
@@ -140,6 +141,14 @@ class JarvisApp:
             bg="#1f6feb", fg="white", activebackground="#388bfd", activeforeground="white",
             font=("Courier", 12, "bold"), bd=0, padx=14, pady=6, highlightthickness=0
         ).pack(side=tk.LEFT, padx=(0, 10))
+
+        # Silences voice replies (typed questions are always answered on screen only)
+        self.mute_btn = tk.Button(
+            row, text="MUTE", command=self.on_mute_pressed,
+            bg="#30363d", fg="white", activebackground="#484f58", activeforeground="white",
+            font=("Courier", 12, "bold"), bd=0, padx=14, pady=6, highlightthickness=0
+        )
+        self.mute_btn.pack(side=tk.LEFT, padx=(0, 10))
 
         self.status_lbl = tk.Label(
             row, text="● STANDBY",
@@ -267,7 +276,8 @@ class JarvisApp:
         self.entry.delete(0, tk.END)
         self.speaker.stop()
         self.ui_queue.put(("msg", "You", text, "user"))
-        threading.Thread(target=self.run_pipeline, args=(text,), daemon=True).start()
+        # Typed questions get on-screen answers only; voice is for spoken questions
+        threading.Thread(target=self.run_pipeline, args=(text, False), daemon=True).start()
 
     def on_talk_pressed(self):
         self.speaker.stop()
@@ -276,6 +286,14 @@ class JarvisApp:
             return
         self.set_status("● LISTENING", "#f85149")
         self.ptt_event.set()
+
+    def on_mute_pressed(self):
+        self.muted = not self.muted
+        if self.muted:
+            self.speaker.stop()
+            self.mute_btn.config(text="MUTED", bg="#da3633", activebackground="#f85149")
+        else:
+            self.mute_btn.config(text="MUTE", bg="#30363d", activebackground="#484f58")
 
     # ── VOICE INPUT ───────────────────────────────────────────────────────────
     def wake_word_listener(self):
@@ -363,7 +381,7 @@ class JarvisApp:
 
     def handle_voice_command(self, text):
         self.ui_queue.put(("msg", "You (Voice)", text, "user"))
-        self.run_pipeline(text)
+        self.run_pipeline(text, speak=True)
 
     def transcribe(self, audio, model_path) -> str:
         """Runs whisper.cpp on the captured audio. Returns cleaned text ('' on failure/noise)."""
@@ -386,27 +404,31 @@ class JarvisApp:
         return text
 
     # ── PIPELINE BRIDGE ───────────────────────────────────────────────────────
-    def run_pipeline(self, user_input: str):
+    def run_pipeline(self, user_input: str, speak: bool):
         with self.pipeline_lock:
             try:
-                self._run_pipeline(user_input)
+                self._run_pipeline(user_input, speak)
             except Exception as e:
                 print(f"[Jarvis] Pipeline error: {type(e).__name__}: {e}")
                 self.ui_queue.put(("msg", "System", f"Error: {e}", "system"))
             finally:
                 self.set_status("● STANDBY", "#00d4ff")
 
-    def _run_pipeline(self, user_input: str):
+    def _run_pipeline(self, user_input: str, speak: bool):
         streamed = []
 
         def on_sentence(sentence):
-            # LLM replies arrive sentence by sentence: show and speak each immediately
+            # LLM replies arrive sentence by sentence: show (and speak) each immediately.
+            # self.muted is checked per sentence so MUTE takes effect mid-reply.
+            voice = speak and not self.muted
             if not streamed:
                 self.ui_queue.put(("start", AGENT_NAME, "jarvis"))
-                self.set_status("● SPEAKING", "#00d4ff")
+                if voice:
+                    self.set_status("● SPEAKING", "#00d4ff")
             streamed.append(sentence)
             self.ui_queue.put(("append", sentence + " "))
-            self.speaker.say(sentence)
+            if voice:
+                self.speaker.say(sentence)
 
         response, source, info = self.pipeline.run(
             user_input, on_status=self.set_status, on_sentence=on_sentence
@@ -434,7 +456,8 @@ class JarvisApp:
             response,
             tag_map.get(source, "jarvis")
         ))
-        self.speaker.say_text(response)
+        if speak and not self.muted:
+            self.speaker.say_text(response)
 
 
 # ── ENTRY POINT ───────────────────────────────────────────────────────────────
